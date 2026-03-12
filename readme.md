@@ -1,7 +1,3 @@
-Absolutely! Here’s an **updated and fully detailed README.md** that includes **LibreOffice installation, dependencies, and system setup steps** for Mac and Linux, alongside all the existing instructions.
-
----
-
 # Ultra-Fast PDF Converter
 
 **Description:**
@@ -91,6 +87,14 @@ Install locally:
 
 ```bash
 pip install -r requirements.txt
+```
+
+---
+
+## 4️⃣ Running Locally
+
+```bash
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ---
