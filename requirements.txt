@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-multipart
+python-docx
+filetype
+reportlab
+arabic-reshaper
+python-bidi

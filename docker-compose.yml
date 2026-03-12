@@ -1,0 +1,10 @@
+version: "3.9"
+services:
+  pdf-converter:
+    build: .
+    container_name: pdf-converter
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./fonts:/app/fonts  # map local fonts folder (DejaVuSans.ttf)
+    restart: unless-stopped

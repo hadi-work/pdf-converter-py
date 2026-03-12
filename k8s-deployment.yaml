@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pdf-converter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pdf-converter
+  template:
+    metadata:
+      labels:
+        app: pdf-converter
+    spec:
+      containers:
+        - name: pdf-converter
+          image: pdf-converter:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pdf-converter-service
+spec:
+  selector:
+    app: pdf-converter
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: LoadBalancer
