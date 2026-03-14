@@ -6,3 +6,4 @@ filetype
 reportlab
 arabic-reshaper
 python-bidi
+pypdf

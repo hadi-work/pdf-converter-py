@@ -75,6 +75,7 @@ filetype
 reportlab
 arabic-reshaper
 python-bidi
+pypdf
 EOF
 
 echo "Installing Python packages..."

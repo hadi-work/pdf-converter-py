@@ -17,6 +17,14 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+
+# Document read
+from fastapi.responses import JSONResponse
+from pathlib import Path
+import zipfile
+from xml.etree import ElementTree as ET
+from pypdf import PdfReader
+
 app = FastAPI(title="Ultra-Fast PDF Converter Full Office Support with Swagger")
 
 # --- Font path for Arabic/Unicode TXT ---
@@ -137,6 +145,126 @@ async def download_pdf(file: UploadFile = File(...)):
         media_type="application/pdf",
         headers={"Content-Disposition": content_disposition}
     )
+
+##########################################################################################################
+
+# Document read to Plain text
+
+# --- TXT → plain text ---
+def txt_to_text(file_bytes: bytes) -> str:
+    return file_bytes.decode("utf-8", errors="ignore")
+
+# --- DOCX → plain text ---
+def docx_to_text(file_bytes: bytes) -> str:
+    def extract_paragraphs(xml_bytes: bytes) -> list[str]:
+        root = ET.fromstring(xml_bytes)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        paragraphs = []
+
+        for paragraph in root.findall(".//w:p", ns):
+            texts = [node.text for node in paragraph.findall(".//w:t", ns) if node.text]
+            if texts:
+                paragraphs.append("".join(texts))
+
+        return paragraphs
+
+    collected = []
+
+    with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
+        xml_names = [
+            name for name in zf.namelist()
+            if name == "word/document.xml"
+            or name.startswith("word/header")
+            or name.startswith("word/footer")
+        ]
+
+        for xml_name in xml_names:
+            with zf.open(xml_name) as xml_file:
+                collected.extend(extract_paragraphs(xml_file.read()))
+
+    return "\n".join(collected)
+
+# --- DOC/DOCX → plain text via LibreOffice ---
+def office_to_text(file_bytes: bytes, ext: str) -> str:
+    suffix = f".{ext}"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+        tmp_file.write(file_bytes)
+        tmp_file_path = tmp_file.name
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subprocess.run([
+                LIBREOFFICE_PATH,
+                "--headless",
+                "--convert-to", "txt:Text",
+                "--outdir", tmp_dir,
+                tmp_file_path
+            ], check=True)
+
+            txt_file = next((f for f in os.listdir(tmp_dir) if f.endswith(".txt")), None)
+            if not txt_file:
+                raise HTTPException(status_code=500, detail="LibreOffice text extraction failed")
+
+            txt_path = os.path.join(tmp_dir, txt_file)
+            with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+    finally:
+        os.unlink(tmp_file_path)
+
+# --- PDF → plain text ---
+def pdf_to_text(file_bytes: bytes) -> str:
+    reader = PdfReader(BytesIO(file_bytes))
+    pages_text = []
+
+    for page in reader.pages:
+        pages_text.append(page.extract_text() or "")
+
+    return "\n".join(pages_text).strip()
+
+
+# --- /extract-text endpoint ---
+@app.post("/extract-text", response_description="Extract plain text from uploaded document")
+async def extract_text(file: UploadFile = File(...)):
+    body = await file.read()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    kind = filetype.guess(body)
+    detected_type = kind.extension.lower() if kind else None
+    file_ext = Path(file.filename).suffix.lower().lstrip(".") if file.filename else ""
+    file_type = detected_type or file_ext or "txt"
+
+    try:
+        if file_type == "pdf":
+            text = await run_in_threadpool(pdf_to_text, body)
+        elif file_type == "docx":
+            try:
+                text = await run_in_threadpool(docx_to_text, body)
+            except Exception:
+                text = await run_in_threadpool(office_to_text, body, file_type)
+        elif file_type == "doc":
+            text = await run_in_threadpool(office_to_text, body, file_type)
+        elif file_type in ["txt", "text"]:
+            text = await run_in_threadpool(txt_to_text, body)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"LibreOffice extraction error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Text extraction error: {str(e)}")
+
+    return JSONResponse(
+        content={
+            "filename": file.filename,
+            "file_type": file_type,
+            "text": text,
+            "length": len(text),
+            "supports_arabic": True
+        }
+    )
+
+
+
 
 # --- Custom Swagger/OpenAPI ---
 def custom_openapi():
