@@ -38,7 +38,7 @@ SUPPORTED_IMAGE_EXT = [".pdf", ".jpg", ".jpeg", ".jfif", ".jng", ".png"]
 # ---------------------------------------------------------
 
 # ⚠️ Change "main" to your actual file name if different
-from main import office_to_pdf_bytes, txt_to_pdf_bytes
+from utils import office_to_pdf_bytes, txt_to_pdf_bytes
 
 
 # ---------------------------------------------------------

@@ -49,6 +49,10 @@ reportlab
 arabic-reshaper
 python-bidi
 pypdf
+pymupdf
+pillow
+httpx
+orjson
 EOF
 
 echo "Installing Python packages..."
