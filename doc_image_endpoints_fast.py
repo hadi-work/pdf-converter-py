@@ -6,7 +6,7 @@ import orjson
 import fitz
 
 from PIL import Image
-from fastapi import UploadFile, File, Request
+from fastapi import UploadFile, File, Request, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -54,7 +54,8 @@ def multipart_stream(parts):
         for name, data in parts:
 
             yield f"--{boundary}\r\n".encode()
-            yield f'Content-Disposition: form-data; name="{name}"\r\n'.encode()
+            # yield f'Content-Disposition: form-data; name="{name}"\r\n'.encode()
+            yield f'Content-Disposition: form-data; name="{name}"; filename="{name}"\r\n'.encode()
             yield b"Content-Type: application/octet-stream\r\n\r\n"
 
             yield data
@@ -128,6 +129,11 @@ def register_convert_endpoint(app):
             if not body:
                 raise RuntimeError("Empty file")
 
+            ALLOWED_FORMATS = {"png", "jpg", "jpeg"}
+
+            if format.lower() not in ALLOWED_FORMATS:
+                raise RuntimeError("Unsupported output format")
+
             ext = os.path.splitext(file.filename or "")[1].lower()
 
             file_bytes, ext = await ensure_pdf(body, ext)
@@ -174,69 +180,170 @@ def register_joinmetadata_endpoint(app):
 
     @app.post("/joinmetadata")
     async def joinmetadata(request: Request):
-
         try:
-
             form = await request.form()
-
             upload = form["file"]
+            metadata_str = form["metadata"]
 
-            metadata = orjson.loads(form["metadata"])
+            # Parse metadata safely
+            if not metadata_str or not metadata_str.strip():
+                return JSONResponse(status_code=400, content={"message": "Empty metadata field"})
+            try:
+                metadata = orjson.loads(metadata_str.strip())
+            except Exception as e:
+                return JSONResponse(status_code=400, content={"message": f"Invalid JSON in metadata: {str(e)}"})
 
+            # Read file bytes
             file_bytes = await upload.read()
-
             if not file_bytes:
                 raise RuntimeError("Empty file")
 
             ext = os.path.splitext(upload.filename or "")[1].lower()
-
             pdf_bytes, ext = await ensure_pdf(file_bytes, ext)
-
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = doc.page_count
+            if total_pages == 0:
+                return JSONResponse(status_code=400, content={"message": "Converted PDF has no pages"})
 
             scale = 1.6
 
-            for item in metadata["items"]:
-
-                image_data = item["image"]
-
-                b64 = image_data.split(",")[1]
+            # Insert images
+            for item in metadata.get("items", []):
+                image_data = item.get("image", "")
+                if "," in image_data:
+                    b64 = image_data.split(",")[1]
+                elif ";" in image_data:
+                    b64 = image_data.split(";")[1]
+                else:
+                    return JSONResponse(status_code=400, content={"message": "Invalid image data (missing base64)"})
+                if not b64.strip():
+                    return JSONResponse(status_code=400, content={"message": "Empty base64 image data"})
 
                 img_bytes = base64.b64decode(b64)
-
                 image = Image.open(io.BytesIO(img_bytes))
 
-                for place in item["places"]:
+                for place in item.get("places", []):
+                    page_number = place.get("page")
+                    if not isinstance(page_number, int):
+                        return JSONResponse(status_code=400, content={"message": "Invalid page number type"})
+                    if page_number < 1 or page_number > total_pages:
+                        return JSONResponse(
+                            status_code=400,
+                            content={"message": f"Invalid page number {page_number}, PDF has {total_pages} pages"}
+                        )
 
-                    page_number = place["page"]
+                    page = doc.load_page(page_number - 1)  # 0-indexed in PyMuPDF
+                    width = int(place.get("width", 0) * scale)
+                    height = int(place.get("height", 0) * scale)
+                    x = int(place.get("x", 0) * scale)
+                    y = int(place.get("y", 0) * scale)
 
-                    page = doc.load_page(page_number)
-
-                    width = int(place["width"] * scale)
-                    height = int(place["height"] * scale)
-
-                    x = int(place["x"] * scale)
-                    y = int(place["y"] * scale)
+                    if width == 0 or height == 0:
+                        continue  # skip empty sizes
 
                     image_resized = image.resize((width, height))
-
                     img_buf = io.BytesIO()
-
                     image_resized.save(img_buf, "PNG")
-
                     rect = fitz.Rect(x, y, x + width, y + height)
-
                     page.insert_image(rect, stream=img_buf.getvalue())
 
+            # Save PDF to memory
             output = io.BytesIO()
-
             doc.save(output)
-
             output.seek(0)
 
+            # Return in existing multipart/form-data format
             return multipart_stream([
                 ("file", output.read())
             ])
+
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"message": str(e)}
+            )
+
+
+
+################################
+
+import zipfile
+from fastapi.responses import StreamingResponse
+
+
+# ---------------------------------------------------------
+# Helper: Convert PDF bytes to PNG pages
+# ---------------------------------------------------------
+
+def pdf_to_png_zip(pdf_bytes: bytes):
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+
+        for i, page in enumerate(doc):
+
+            pix = page.get_pixmap(dpi=125)
+
+            img_bytes = pix.tobytes("png")
+
+            zipf.writestr(f"{i}.png", img_bytes)
+
+    zip_buffer.seek(0)
+
+    return zip_buffer
+
+
+# ---------------------------------------------------------
+# Register /convert-download
+# ---------------------------------------------------------
+
+def register_convert_download_endpoint(app):
+
+    @app.post("/convert-download")
+    async def convert_download(file: UploadFile = File(...), format: str = "png"):
+
+        try:
+
+            body = await file.read()
+
+            if not body:
+                raise RuntimeError("Empty file")
+
+            ext = os.path.splitext(file.filename or "")[1].lower()
+
+            file_bytes, ext = await ensure_pdf(body, ext)
+
+            # ---------- IMAGE INPUT ----------
+
+            if ext != ".pdf":
+
+                img_bytes = convert_image_bytes(file_bytes, "png")
+
+                zip_buffer = io.BytesIO()
+
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.writestr("0.png", img_bytes)
+
+                zip_buffer.seek(0)
+
+                return StreamingResponse(
+                    zip_buffer,
+                    media_type="application/zip",
+                    headers={"Content-Disposition": "attachment; filename=images.zip"}
+                )
+
+            # ---------- PDF INPUT ----------
+
+            zip_buffer = pdf_to_png_zip(file_bytes)
+
+            return StreamingResponse(
+                zip_buffer,
+                media_type="application/zip",
+                headers={"Content-Disposition": "attachment; filename=images.zip"}
+            )
 
         except Exception as e:
 
@@ -244,3 +351,109 @@ def register_joinmetadata_endpoint(app):
                 status_code=500,
                 content={"message": str(e)}
             )
+
+
+# ---------------------------------------------------------
+# Register /joinmetadata-download
+# ---------------------------------------------------------
+
+def register_joinmetadata_download_endpoint(app):
+
+    @app.post("/joinmetadata-download")
+    async def joinmetadata_download(
+        file: UploadFile = File(...),
+        metadata: str = Form(...)
+    ):
+        try:
+            # Read uploaded file
+            file_bytes = await file.read()
+            if not file_bytes:
+                return JSONResponse(status_code=400, content={"message": "Empty file"})
+
+            # Parse metadata safely
+            if not metadata or not metadata.strip():
+                return JSONResponse(status_code=400, content={"message": "Empty metadata field"})
+            try:
+                metadata_json = orjson.loads(metadata.strip())
+            except Exception as e:
+                return JSONResponse(status_code=400, content={"message": f"Invalid JSON in metadata: {str(e)}"})
+
+            # Ensure PDF using your existing function
+            ext = os.path.splitext(file.filename or "")[1].lower()
+            pdf_bytes, ext = await ensure_pdf(file_bytes, ext)  # must return PDF bytes
+
+            # Open PDF with PyMuPDF
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = doc.page_count
+            if total_pages == 0:
+                return JSONResponse(status_code=400, content={"message": "Converted PDF has no pages"})
+
+            scale = 1.6  # scale factor from 125->200 dpi
+
+            # Insert images
+            for item in metadata_json.get("items", []):
+                image_data = item.get("image", "")
+                # if "," not in image_data:
+                #     return JSONResponse(status_code=400, content={"message": "Invalid image data (missing base64)"})
+                if "," in image_data:
+                    b64 = image_data.split(",")[1]
+                elif ";" in image_data:
+                    b64 = image_data.split(";")[1]
+                else:
+                    return JSONResponse(status_code=400, content={"message": "Invalid image data (missing base64)"})
+                # b64 = image_data.split(",")[1]
+                if not b64.strip():
+                    return JSONResponse(status_code=400, content={"message": "Empty base64 image data"})
+                img_bytes = base64.b64decode(b64)
+                image = Image.open(io.BytesIO(img_bytes))
+
+                for place in item.get("places", []):
+                    page_number = place.get("page")
+                    if not isinstance(page_number, int):
+                        return JSONResponse(status_code=400, content={"message": "Invalid page number type"})
+                    if page_number < 1 or page_number > total_pages:
+                        return JSONResponse(
+                            status_code=400,
+                            content={"message": f"Invalid page number {page_number}, PDF has {total_pages} pages"}
+                        )
+
+                    page = doc.load_page(page_number - 1)  # 0-indexed in PyMuPDF
+                    width = int(place.get("width", 0) * scale)
+                    height = int(place.get("height", 0) * scale)
+                    x = int(place.get("x", 0) * scale)
+                    y = int(place.get("y", 0) * scale)
+
+                    if width == 0 or height == 0:
+                        continue  # skip empty sizes
+
+                    image_resized = image.resize((width, height))
+                    img_buf = io.BytesIO()
+                    image_resized.save(img_buf, "PNG")
+                    rect = fitz.Rect(x, y, x + width, y + height)
+                    page.insert_image(rect, stream=img_buf.getvalue())
+
+            # Save PDF to memory
+            output_pdf = io.BytesIO()
+            doc.save(output_pdf)
+            output_pdf.seek(0)
+
+            # Convert PDF pages to PNG ZIP
+            zip_buffer = io.BytesIO()
+            pdf_for_png = fitz.open(stream=output_pdf.read(), filetype="pdf")
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+                for i, page in enumerate(pdf_for_png):
+                    pix = page.get_pixmap(dpi=125)
+                    img_bytes = pix.tobytes("png")
+                    zipf.writestr(f"{i}.png", img_bytes)
+
+            zip_buffer.seek(0)
+
+            # Return ZIP download
+            return StreamingResponse(
+                zip_buffer,
+                media_type="application/zip",
+                headers={"Content-Disposition": "attachment; filename=pages.zip"}
+            )
+
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"message": str(e)})

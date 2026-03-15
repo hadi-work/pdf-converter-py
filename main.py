@@ -29,10 +29,15 @@ app = FastAPI(title="Ultra-Fast PDF Converter Full Office Support with Swagger")
 
 from doc_image_endpoints_fast import (
     register_convert_endpoint,
-    register_joinmetadata_endpoint
+    register_joinmetadata_endpoint,
+    register_convert_download_endpoint,
+    register_joinmetadata_download_endpoint
 )
+
 register_convert_endpoint(app)
 register_joinmetadata_endpoint(app)
+register_convert_download_endpoint(app)
+register_joinmetadata_download_endpoint(app)
 
 
 # --- Font path for Arabic/Unicode TXT ---
