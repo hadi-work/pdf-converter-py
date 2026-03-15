@@ -18,7 +18,8 @@ if not LIBREOFFICE_PATH:
 
 # --- TXT → PDF ---
 def txt_to_pdf_bytes(file_bytes: bytes) -> bytes:
-    text = file_bytes.decode("utf-8")
+    # text = file_bytes.decode("utf-8")
+    text = file_bytes.decode("utf-8", errors="replace")
     pdf_buffer = BytesIO()
     c = canvas.Canvas(pdf_buffer)
     c.setFont("DejaVu", 14)
@@ -26,6 +27,12 @@ def txt_to_pdf_bytes(file_bytes: bytes) -> bytes:
     right_margin = page_width - 50
     y = 800
     for line in text.split("\n"):
+
+        if y < 50:
+            c.showPage()
+            c.setFont("DejaVu", 14)
+            y = 800
+
         reshaped_text = arabic_reshaper.reshape(line)
         bidi_text = get_display(reshaped_text)
         c.drawRightString(right_margin, y, bidi_text)
@@ -43,13 +50,25 @@ def office_to_pdf_bytes(file_bytes: bytes, ext: str) -> bytes:
 
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            subprocess.run([
-                LIBREOFFICE_PATH,
-                "--headless",
-                "--convert-to", "pdf",
-                "--outdir", tmp_dir,
-                tmp_file_path
-            ], check=True)
+            # subprocess.run([
+            #     LIBREOFFICE_PATH,
+            #     "--headless",
+            #     "--convert-to", "pdf",
+            #     "--outdir", tmp_dir,
+            #     tmp_file_path
+            # ], check=True)
+
+            subprocess.run(
+                [
+                    LIBREOFFICE_PATH,
+                    "--headless",
+                    "--convert-to", "pdf",
+                    "--outdir", tmp_dir,
+                    tmp_file_path
+                ],
+                check=True,
+                timeout=60
+            )
 
             pdf_file = next((f for f in os.listdir(tmp_dir) if f.endswith(".pdf")), None)
             if not pdf_file:

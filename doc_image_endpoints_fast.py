@@ -10,7 +10,7 @@ from fastapi import UploadFile, File, Request, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 # -----------------------------------------------------
 # pip install pymupdf pillow httpx orjson
 # -----------------------------------------------------
@@ -106,12 +106,14 @@ def convert_image_bytes(image_bytes, fmt):
 
     img = Image.open(io.BytesIO(image_bytes))
 
+    if fmt.lower() in ["jpg", "jpeg"] and img.mode in ("RGBA", "LA"):
+        img = img.convert("RGB")
+
     buf = io.BytesIO()
 
     img.save(buf, fmt.upper())
 
     return buf.getvalue()
-
 
 # ---------------------------------------------------------
 # Register /convert endpoint
@@ -128,6 +130,9 @@ def register_convert_endpoint(app):
 
             if not body:
                 raise RuntimeError("Empty file")
+
+            if len(body) > MAX_FILE_SIZE:
+                raise RuntimeError("File too large")
 
             ALLOWED_FORMATS = {"png", "jpg", "jpeg"}
 
@@ -151,18 +156,19 @@ def register_convert_endpoint(app):
             # ---------- PDF INPUT ----------
 
             doc = fitz.open(stream=file_bytes, filetype="pdf")
+            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+                parts = []
 
-            parts = []
+                for i, page in enumerate(doc):
 
-            for i, page in enumerate(doc):
+                    pix = page.get_pixmap(dpi=125)
 
-                pix = page.get_pixmap(dpi=125)
+                    # img_bytes = pix.tobytes(format)
+                    img_bytes = pix.tobytes(output=format)
 
-                img_bytes = pix.tobytes(format)
+                    parts.append((f"{i}.{format}", img_bytes))
 
-                parts.append((f"{i}.{format}", img_bytes))
-
-            return multipart_stream(parts)
+                return multipart_stream(parts)
 
         except Exception as e:
 
