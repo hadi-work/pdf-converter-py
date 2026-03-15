@@ -38,7 +38,7 @@ SUPPORTED_IMAGE_EXT = [".pdf", ".jpg", ".jpeg", ".jfif", ".jng", ".png"]
 # ---------------------------------------------------------
 
 # ⚠️ Change "main" to your actual file name if different
-from utils import office_to_pdf_bytes, txt_to_pdf_bytes
+from utils import office_to_pdf_bytes, txt_to_pdf_bytes, is_base64
 
 
 # ---------------------------------------------------------
@@ -211,12 +211,15 @@ def register_joinmetadata_endpoint(app):
             if total_pages == 0:
                 return JSONResponse(status_code=400, content={"message": "Converted PDF has no pages"})
 
-            scale = 1.6
+            # scale = 1.6
+            scale = 72 / 125  # scale factor from 125->200 dpi
 
             # Insert images
             for item in metadata.get("items", []):
                 image_data = item.get("image", "")
-                if "," in image_data:
+                if is_base64(image_data):
+                    b64 = image_data
+                elif "," in image_data:
                     b64 = image_data.split(",")[1]
                 elif ";" in image_data:
                     b64 = image_data.split(";")[1]
@@ -228,8 +231,12 @@ def register_joinmetadata_endpoint(app):
                 img_bytes = base64.b64decode(b64)
                 image = Image.open(io.BytesIO(img_bytes))
 
+                # Force RGB to remove transparency
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+
                 for place in item.get("places", []):
-                    page_number = place.get("page")
+                    page_number = place.get("page") + 1
                     if not isinstance(page_number, int):
                         return JSONResponse(status_code=400, content={"message": "Invalid page number type"})
                     if page_number < 1 or page_number > total_pages:
@@ -238,20 +245,22 @@ def register_joinmetadata_endpoint(app):
                             content={"message": f"Invalid page number {page_number}, PDF has {total_pages} pages"}
                         )
 
-                    page = doc.load_page(page_number - 1)  # 0-indexed in PyMuPDF
-                    width = int(place.get("width", 0) * scale)
-                    height = int(place.get("height", 0) * scale)
-                    x = int(place.get("x", 0) * scale)
-                    y = int(place.get("y", 0) * scale)
+                    page = doc.load_page(page_number - 1)
 
-                    if width == 0 or height == 0:
-                        continue  # skip empty sizes
+                    x = float(place.get("x", 0)) * scale
+                    y = float(place.get("y", 0)) * scale
+                    width = float(place.get("width", 0)) * scale
+                    height = float(place.get("height", 0)) * scale
 
-                    image_resized = image.resize((width, height))
-                    img_buf = io.BytesIO()
-                    image_resized.save(img_buf, "PNG")
+                    if width < 2 or height < 2:
+                        continue
+
                     rect = fitz.Rect(x, y, x + width, y + height)
-                    page.insert_image(rect, stream=img_buf.getvalue())
+
+                    page.insert_image(
+                        rect,
+                        stream=img_bytes
+                    )
 
             # Save PDF to memory
             output = io.BytesIO()
@@ -268,10 +277,6 @@ def register_joinmetadata_endpoint(app):
                 status_code=500,
                 content={"message": str(e)}
             )
-
-
-
-################################
 
 import zipfile
 from fastapi.responses import StreamingResponse
@@ -394,53 +399,64 @@ def register_joinmetadata_download_endpoint(app):
             if total_pages == 0:
                 return JSONResponse(status_code=400, content={"message": "Converted PDF has no pages"})
 
-            scale = 1.6  # scale factor from 125->200 dpi
+            scale = 72 / 125  # scale factor from 125->200 dpi
 
             # Insert images
             for item in metadata_json.get("items", []):
                 image_data = item.get("image", "")
-                # if "," not in image_data:
-                #     return JSONResponse(status_code=400, content={"message": "Invalid image data (missing base64)"})
-                if "," in image_data:
+
+                if is_base64(image_data):
+                    b64 = image_data
+                elif "," in image_data:
                     b64 = image_data.split(",")[1]
                 elif ";" in image_data:
                     b64 = image_data.split(";")[1]
                 else:
                     return JSONResponse(status_code=400, content={"message": "Invalid image data (missing base64)"})
-                # b64 = image_data.split(",")[1]
                 if not b64.strip():
                     return JSONResponse(status_code=400, content={"message": "Empty base64 image data"})
                 img_bytes = base64.b64decode(b64)
+
                 image = Image.open(io.BytesIO(img_bytes))
 
+                # Force RGB to remove transparency
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+
                 for place in item.get("places", []):
-                    page_number = place.get("page")
-                    if not isinstance(page_number, int):
-                        return JSONResponse(status_code=400, content={"message": "Invalid page number type"})
+
+                    page_number = place.get("page") + 1
+
                     if page_number < 1 or page_number > total_pages:
-                        return JSONResponse(
-                            status_code=400,
-                            content={"message": f"Invalid page number {page_number}, PDF has {total_pages} pages"}
-                        )
+                        continue
 
-                    page = doc.load_page(page_number - 1)  # 0-indexed in PyMuPDF
-                    width = int(place.get("width", 0) * scale)
-                    height = int(place.get("height", 0) * scale)
-                    x = int(place.get("x", 0) * scale)
-                    y = int(place.get("y", 0) * scale)
+                    page = doc.load_page(page_number - 1)
 
-                    if width == 0 or height == 0:
-                        continue  # skip empty sizes
+                    x = float(place.get("x", 0)) * scale
+                    y = float(place.get("y", 0)) * scale
+                    width = float(place.get("width", 0)) * scale
+                    height = float(place.get("height", 0)) * scale
 
-                    image_resized = image.resize((width, height))
-                    img_buf = io.BytesIO()
-                    image_resized.save(img_buf, "PNG")
+                    if width < 2 or height < 2:
+                        continue
+
                     rect = fitz.Rect(x, y, x + width, y + height)
-                    page.insert_image(rect, stream=img_buf.getvalue())
+
+                    page.insert_image(
+                        rect,
+                        stream=img_bytes
+                    )
 
             # Save PDF to memory
             output_pdf = io.BytesIO()
-            doc.save(output_pdf)
+            # doc.save(output_pdf)
+            doc.save(
+                output_pdf,
+                garbage=4,
+                deflate=True
+            )
+            doc.close()
+
             output_pdf.seek(0)
 
             # Convert PDF pages to PNG ZIP
