@@ -11,3 +11,5 @@ pymupdf
 pillow
 httpx
 orjson
+starlette
+fitz

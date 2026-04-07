@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Ensure fonts folder exists
-RUN mkdir -p /app/fonts
+#RUN mkdir -p /app/fonts
 
 # Expose FastAPI port
 EXPOSE 8000
